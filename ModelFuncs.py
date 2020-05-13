@@ -106,7 +106,7 @@ def TransientFlowModel(x, y, z, t, kx, ky, kz, Ss, FQ, HI, IBOUND, epsilon=0.67)
         hydraulic conductivities along the three axes, 3D arrays.
     `FQ` : ndarray, shape: (Ny, Nx, Nz), [L3/T]
         prescribed cell flows (injection positive, zero of no inflow/outflow)
-    `IH` : ndarray, shape: (Ny, Nx, Nz), [L]
+    `HI` : ndarray, shape: (Ny, Nx, Nz), [L]
         initial heads. `IH` has the prescribed heads for the cells with prescribed head.
     `IBOUND` : ndarray of int, shape: (Ny, Nx, Nz), dim: [-]
         boundary array like in MODFLOW with values denoting
@@ -265,7 +265,7 @@ def TransientFlowModel(x, y, z, t, kx, ky, kz, Ss, FQ, HI, IBOUND, epsilon=0.67)
     for idt, dt in enumerate(np.diff(t)):
 
         it = idt + 1
-
+    
         # compute right hand side of equation
         RHS = FQ - (A + sp.diags(Cs / dt))[:,fxhd].dot(Out.Phi[it-1][fxhd]) 
 
@@ -285,6 +285,7 @@ def TransientFlowModel(x, y, z, t, kx, ky, kz, Ss, FQ, HI, IBOUND, epsilon=0.67)
 
         # update head to end of time step
         Out.Phi[it] = Out.Phi[it-1] + (Out.Phi[it] - Out.Phi[it-1]) / epsilon
+    
 
     # reshape Phi to shape of grid
     Out.Phi = Out.Phi.reshape((Nt,) + SHP)
