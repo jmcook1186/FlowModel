@@ -86,7 +86,7 @@ def sort_dim(x, tol=0.0001):
         return x[np.hstack((np.diff(x) > +tol, True))]
 
 
-def TransientFlowModel(x, y, z, t, kx, ky, kz, Ss, FQ, HI, IBOUND, epsilon=0.67):
+def TransientFlowModel(x, y, z, t, kx, ky, kz, Ss, FQ, HI, IBOUND, epsilon):
     
     '''Returns computed heads of steady state 3D finite difference grid.Steady state 3D Finite Difference Model 
     that computes the heads a 3D ndarray.
@@ -102,7 +102,7 @@ def TransientFlowModel(x, y, z, t, kx, ky, kz, Ss, FQ, HI, IBOUND, epsilon=0.67)
     t : ndarray, shape: [Nt+1]
         times at which the heads and flows are desired including the start time,
         which is usually zero, but can have any value.
-    `kx`, `ky`, `kz` : ndarray, shape: (Ny, Nx, Nz) [L/T]
+    `kx`, `ky`, `kz` : ndarray, shape: (Ny, Nx, Nz) [m/d]
         hydraulic conductivities along the three axes, 3D arrays.
     `FQ` : ndarray, shape: (Ny, Nx, Nz), [L3/T]
         prescribed cell flows (injection positive, zero of no inflow/outflow)
@@ -248,6 +248,7 @@ def TransientFlowModel(x, y, z, t, kx, ky, kz, Ss, FQ, HI, IBOUND, epsilon=0.67)
     Out.Qx  = np.zeros((Nt, Nz, Ny, Nx-1))
     Out.Qy  = np.zeros((Nt, Nz, Ny-1, Nx))
     Out.Qz  = np.zeros((Nt, Nz-1, Ny, Nx))
+    Out.sf = np.zeros((Nt,Nz-1,Ny,Nx))
 
     # reshape input arrays to vectors using our ravel shorthand R
     # to enable vector multiplication with system matrix A
@@ -285,7 +286,6 @@ def TransientFlowModel(x, y, z, t, kx, ky, kz, Ss, FQ, HI, IBOUND, epsilon=0.67)
 
         # update head to end of time step
         Out.Phi[it] = Out.Phi[it-1] + (Out.Phi[it] - Out.Phi[it-1]) / epsilon
-    
 
     # reshape Phi to shape of grid
     Out.Phi = Out.Phi.reshape((Nt,) + SHP)
