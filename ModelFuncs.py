@@ -86,7 +86,7 @@ def sort_dim(x, tol=0.0001):
         return x[np.hstack((np.diff(x) > +tol, True))]
 
 
-def TransientFlowModel(x, y, z, t, kx, ky, kz, Ss, FQ, HI, IBOUND, epsilon):
+def TransientFlowModel(x, y, z, t, kx, ky, kz, Ss, FQ, HI, IBOUND, epsilon, upper_surface, lower_surface, constrain_head_to_WC):
     
     '''Returns computed heads of steady state 3D finite difference grid.Steady state 3D Finite Difference Model 
     that computes the heads a 3D ndarray.
@@ -286,6 +286,38 @@ def TransientFlowModel(x, y, z, t, kx, ky, kz, Ss, FQ, HI, IBOUND, epsilon):
 
         # update head to end of time step
         Out.Phi[it] = Out.Phi[it-1] + (Out.Phi[it] - Out.Phi[it-1]) / epsilon
+
+             
+        # impose limit on hydraulic head - if head descends below bottom boundary, set to bottom boundary
+        # if head rises above upper surface, set to upper surface. Any excess head considered as surface runoff
+
+        upper = upper_surface.ravel()
+        lower = lower_surface.ravel()
+
+        if constrain_head_to_WC:
+            for i in range(Nz+1):
+                
+                if i==0:
+                    test = Out.Phi[it].ravel()
+                    test[0:len(upper)] = np.where(test[0:len(upper)]>upper,upper,test[0:len(upper)])
+                    test[0:len(lower)] = np.where(test[0:len(lower)]<lower,lower,test[0:len(lower)])
+                    Out.Phi[0] = test
+
+                elif (i > 0) & (i < Nz):
+                    test = Out.Phi[it].ravel()
+                    test[len(upper)*i:len(upper)*(i+1)] = np.where(test[len(upper)*i:len(upper)*(i+1)]>upper,upper,test[len(upper)*i:len(upper)*(i+1)])
+                    test[len(lower)*i:len(lower)*(i+1)] = np.where(test[len(lower)*i:len(lower)*(i+1)]<lower,lower,test[len(lower)*i:len(lower)*(i+1)])
+                    Out.Phi[i] = test
+
+                elif i == Nz:
+                    test = Out.Phi[it].ravel()
+                    test[len(test)-len(upper):len(test)] = np.where(test[len(test)-len(upper):len(test)]>upper,upper,test[len(test)-len(upper):len(test)])
+                    test[len(test)-len(lower):len(test)] = np.where(test[len(test)-len(lower):len(test)]<lower,lower,test[len(test)-len(lower):len(test)])
+                    Out.Phi[Nz] = test
+
+                else: 
+                    print("Nz out of range")
+
 
     # reshape Phi to shape of grid
     Out.Phi = Out.Phi.reshape((Nt,) + SHP)
