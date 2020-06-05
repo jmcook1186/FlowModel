@@ -4,9 +4,6 @@ from scipy.sparse.linalg import spsolve
 from collections import namedtuple
 
 
-
-
-
 def sort_dim(x, tol=0.0001):
 
     """

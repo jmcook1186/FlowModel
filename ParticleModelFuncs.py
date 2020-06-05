@@ -5,7 +5,6 @@ def vector_arrows(Out, x, y, z, plot_layer):
     
     """
     returns flow velocity vectors in each cell
-
     Parameters
     ----------
     `Out` : namedtuple containing arrays `Qx`, `Qy`, `Qz` as 
@@ -42,7 +41,6 @@ def vector_arrows(Out, x, y, z, plot_layer):
         Flow in `y`-direction at cell centers
     `W` : ndarray, shape: (Nz, Ny, Nx), [L3/T]
         Flow in `z`-direction at cell centers.
-
     """
     # length of array in each dimension
     Ny = len(y)-1
@@ -50,20 +48,20 @@ def vector_arrows(Out, x, y, z, plot_layer):
     Nz = len(z)-1
 
     print(Nz)
-    
+
     # coordinates of cell centres
     # (halfway between L and R edges)
     xm = 0.5 * (x[:-1] + x[1:])
     ym = 0.5 * (y[:-1] + y[1:])
 
-    
+
     # create empty arrays for output
     U = np.zeros((len(Out.Qx[:,0,0,0]),len(Out.Qx[0,:,0,0]),len(Out.Qx[0,0,:,0]),len(Out.Qx[0,0,0,:])+1))    
     V = np.zeros((len(Out.Qy[:,0,0,0]),len(Out.Qy[0,:,0,0]),len(Out.Qy[0,0,:,0])+1,len(Out.Qy[0,0,0,:])))
-    
+
     # create mesh
     X, Y, = np.meshgrid(xm, ym) # coordinates of cell centers
-    
+
     # iterate through timesteps
     for t in range(len(Out.Qy[:,0,0,0])): # number of timesteps
 
@@ -77,14 +75,45 @@ def vector_arrows(Out, x, y, z, plot_layer):
                             0.5 * (Qx[plot_layer, :, :-1].reshape((1, Ny, Nx-2)) +\
                                 Qx[plot_layer, :, 1: ].reshape((1, Ny, Nx-2))), \
                             Qx[plot_layer, :, -1].reshape((1, Ny, 1))), axis=2).reshape((Ny,Nx))
-        
+
         Vt = np.concatenate((Qy[plot_layer, 0, :].reshape((1, 1, Nx)), \
                             0.5 * (Qy[plot_layer, :-1, :].reshape((1, Ny-2, Nx)) +\
                                 Qy[plot_layer, 1:,  :].reshape((1, Ny-2, Nx))), \
                             Qy[plot_layer, -1, :].reshape((1, 1, Nx))), axis=1).reshape((Ny,Nx))
-            
+
             # add results to output arrays
         U[t,:,:,:] = Ut
         V[t,:,:,:] = Vt
 
-    return X,Y,U,V
+    return X,Y,U,V 
+
+
+
+def particle_tracker(U,V,W):
+
+    """
+    Assume bacteria are <5um and therefore gravitational settling and physical
+    filtration are negligible
+
+    base condition is that initial concentration in cells/mL is scaled by flow
+    in mL/t, giving flux of cells per timestep. However, this is modified by
+    growth and decay and potentially adsorption at cryoconite layers (and ice?).
+
+    normalise the amoutn of total flow going in lateral and longitudinal direction in each layer
+    so that x% flows L/R and x% flows N/S. sum all vertical layers.
+
+    select a direction according to max vector? Then send appropriate cell number
+    to appropriate adjacent cell. Should be able to vectorise this operation.
+
+
+
+    cell_cnc0 = 5000000
+    cell_cnc1 = cell_cnc0 + netFlux + growth - death + adsorption + gravitation + pickup from conite
+    + dropoff to conite
+
+
+
+    """
+
+    return
+
