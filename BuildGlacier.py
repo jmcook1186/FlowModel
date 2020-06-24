@@ -2,9 +2,9 @@ import numpy as np
 
 class Glacier:
 
-    def __init__(self, x, y, z, cell_spacing_xy, cell_spacing_z, base_elevation, WC_thickness0, WaterTable0,\
+    def __init__(self, x, y, z, cell_spacing_xy, cell_spacing_z, base_elevation, WC_thickness0, porosity0, specific_retention, WaterTable0,\
     cryoconite_coverage, melt_rate0, rainfall0, slope, kxy, kz, loss_at_edges, loss_at_terminus,\
-    stream_location, moulin_location, moulin_extr_rate):
+    stream_location, moulin_location, moulin_extr_rate, algae):
 
         SHP = (len(z)-1, len(y)-1, len(x)-1)
 
@@ -15,6 +15,8 @@ class Glacier:
         cryoconite_locations = np.random.choice(a=[True,False],size=SHP[1:], p=[cryoconite_coverage,1-cryoconite_coverage])
         melt_rate = np.zeros(SHP)+melt_rate0
         rainfall = np.zeros(SHP)+rainfall0
+        porosity = np.ones(SHP)*porosity0
+        Ss = porosity - specific_retention 
 
         for i in range(upper_surface.shape[0]):
 
@@ -26,7 +28,8 @@ class Glacier:
         HI = np.zeros(SHP)
         HI[0,:,:] = WaterTable0
 
-        # calculate hydraulic head at each finite difference length beneath the water table surface
+        # calculate hydraulic head at each finite difference length beneath 
+        # the water table surface
         for i in np.arange(1,WC_thickness0/cell_spacing_z-1,1):
             HI[int(i),:,:] = WaterTable0 - cell_spacing_z + (cell_spacing_z*i)
 
@@ -61,7 +64,7 @@ class Glacier:
         FQ += rainfall
 
         IBOUND = np.ones(SHP)
-        IBOUND[:, -1, :] = -1 # last row of model heads are prescribed (-1 head at base boundary)
+        IBOUND[:, -1, :] = 0 # last row of model heads are prescribed (-1 head at base boundary)
         IBOUND[:, 0, :] = 0 # these cells are inactive (top boundary)
 
         self.SHP = SHP
@@ -74,6 +77,9 @@ class Glacier:
         self.upper_surface = upper_surface
         self.lower_surface = lower_surface
         self.WaterTable = WaterTable
+        self.porosity = porosity
+        self.storage = Ss
         self.cryoconite_locations = cryoconite_locations
+        self.algae = algae
 
         return 

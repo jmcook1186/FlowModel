@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from FlowModelFuncs import sort_dim
 
 def vector_arrows(Out, x, y, z, plot_layer):
     
@@ -42,12 +43,15 @@ def vector_arrows(Out, x, y, z, plot_layer):
     `W` : ndarray, shape: (Nz, Ny, Nx), [L3/T]
         Flow in `z`-direction at cell centers.
     """
+
+    x = sort_dim(x)
+    y = sort_dim(y)
+    z = sort_dim(z)
+
     # length of array in each dimension
     Ny = len(y)-1
     Nx = len(x)-1
     Nz = len(z)-1
-
-    print(Nz)
 
     # coordinates of cell centres
     # (halfway between L and R edges)
@@ -76,12 +80,12 @@ def vector_arrows(Out, x, y, z, plot_layer):
         Ut = np.concatenate((Qx[plot_layer, :, 0].reshape((1, Ny, 1)), \
                             0.5 * (Qx[plot_layer, :, :-1].reshape((1, Ny, Nx-2)) +\
                                 Qx[plot_layer, :, 1: ].reshape((1, Ny, Nx-2))), \
-                            Qx[plot_layer, :, -1].reshape((1, Ny, 1))), axis=2).reshape((Nx,Ny))
+                            Qx[plot_layer, :, -1].reshape((1, Ny, 1))), axis=2).reshape((Ny,Nx))
 
         Vt = np.concatenate((Qy[plot_layer, 0, :].reshape((1, 1, Nx)), \
                             0.5 * (Qy[plot_layer, :-1, :].reshape((1, Ny-2, Nx)) +\
                                 Qy[plot_layer, 1:,  :].reshape((1, Ny-2, Nx))), \
-                            Qy[plot_layer, -1, :].reshape((1, 1, Nx))), axis=1).reshape((Nx,Ny))
+                            Qy[plot_layer, -1, :].reshape((1, 1, Nx))), axis=1).reshape((Ny,Nx))
 
         # average flow across vertical cell to get z flow at cell centre
         QzTop = Qz[0:-1,:,:]
@@ -97,9 +101,10 @@ def vector_arrows(Out, x, y, z, plot_layer):
 
 
 
-def particle_tracker(Out, U, V, W, t, cell0, cellG, cellD, SHP, cryoconite_locations):
+def cell_cnc_tracker(Out, U, V, W, t, cell0, cellG, cellD, SHP, cryoconite_locations):
 
     """
+
     Assume bacteria are <5um and therefore gravitational settling and physical
     filtration are negligible
 
@@ -107,7 +112,7 @@ def particle_tracker(Out, U, V, W, t, cell0, cellG, cellD, SHP, cryoconite_locat
     in mL/t, giving flux of cells per timestep. However, this is modified by
     growth and decay and potentially adsorption at cryoconite layers (and ice?).
 
-    normalise the amoutn of total flow going in lateral and longitudinal direction in each layer
+    normalise the amount of total flow going in lateral and longitudinal direction in each layer
     so that x% flows L/R and x% flows N/S. sum all vertical layers.
 
     select a direction according to max vector? Then send appropriate cell number
@@ -119,26 +124,54 @@ def particle_tracker(Out, U, V, W, t, cell0, cellG, cellD, SHP, cryoconite_locat
 
     """
 
-    Cells = np.random.rand(len(t),SHP[0],SHP[1],SHP[2])*cell0
-    CellD = np.zeros(shape=(SHP[0],SHP[1],SHP[2]))+cellD
-    CellG = np.zeros(shape=(SHP[0],SHP[1],SHP[2]))+cellG
-    CellG[-1,cryoconite_locations]=cellG*100
-
-    # calculate divergence as dot product of vector components in x,y and z directions
+    Cells = np.random.rand(len(t),SHP[0],SHP[1],SHP[2]) * cell0
+    CellD = np.zeros(shape=(SHP[0],SHP[1],SHP[2])) + cellD
+    CellG = np.zeros(shape=(SHP[0],SHP[1],SHP[2])) + cellG
     
+    
+    for i in np.arange(0,SHP[0],1):
+        CellG[i,:,:] = np.where(cryoconite_locations==True, CellG[i,:,:]*1000, CellG[i,:,:])
+   
     for t in np.arange(0,len(Out.Qz[:,0,0,0]),1):
+        
         for layer in np.arange(0,len(Out.Qz[0,:,0,0]),1):
-            
-            divergence = (U[t,layer,:,:] + V[t,layer,:,:] + W[t,layer,:,:])
+
+            # normalise lateral flow so that -ve= flow out of cells towards edges
+            # and positive flow is towards centre line. In Qx -ve = leftwards flow
+            # and +ve = rightwards flow. This leads to a rightwards drift in cell
+            # fluxes if not normalised in this way.
+            U[t,layer,:,0:int(U.shape[2]/2)] = 0-U[t,layer,:,0:int(U.shape[2]/2)]
+
+            # nabla is the inverted delta operator used to denote the divergence 
+            # of a vector field, here applied to hydrological flow in m3/d 
+            # calculated as dx/dt + dy/dt + dz/dt
+
+            nabla = (U[t,layer,:,:] + V[t,layer,:,:] + W[t,layer,:,:])
             
             # divergence gives net in/outflow in m3/t
             # cells/m3 = cells/mL *1000
 
-            delC = (0-divergence) * ((1+CellG[layer,:,:]) - CellD[layer,:,:])
-            Cells[t,layer,:,:] = Cells[t,layer,:,:] + delC*1000 
+            delC = Out.Q[t,layer,:,:] * (1+CellG[layer,:,:] - CellD[layer,:,:])
+
+            Cells[t,layer,:,:] = Cells[t,layer,:,:] + (delC * 1000) 
+
             Cells[Cells<0] = 0
+            
+    CellColumnTot = Cells.sum(axis=1)
+              
+
+    return Cells, CellColumnTot
+
+
+def calc_export(CellColumnTot):
+
+    TotalExport = CellColumnTot[:,:,-1].sum(axis=1)
     
-    Cells = np.sum(Cells,axis=1)
+    CumExport = []
+    for i in np.arange(0,len(TotalExport),1):
+        if i == 0:
+            CumExport.append(TotalExport[0])
+        else:
+            CumExport.append(TotalExport[i] + CumExport[i-1]) 
 
-    return Cells
-
+    return TotalExport, CumExport

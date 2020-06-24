@@ -2,6 +2,8 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
 from collections import namedtuple
+import multiprocessing as mp
+import ebmodel as ebm
 
 
 def sort_dim(x, tol=0.0001):
@@ -18,7 +20,7 @@ def sort_dim(x, tol=0.0001):
         return x[np.hstack((np.diff(x) > +tol, True))]
 
 
-def TransientFlowModel(x, y, z, t, kx, ky, kz, Ss, FQ, HI, IBOUND, epsilon, upper_surface, lower_surface, constrain_head_to_WC, moulin_location):
+def TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, MELT_CALCS, moulin_location):
     
     '''Returns computed heads of steady state 3D finite difference grid.Steady state 3D Finite Difference Model 
     that computes the heads a 3D ndarray.
@@ -74,24 +76,47 @@ def TransientFlowModel(x, y, z, t, kx, ky, kz, Ss, FQ, HI, IBOUND, epsilon, uppe
     from scipy.sparse.linalg import spsolve
     import matplotlib.pyplot as plt
 
-    Out = namedtuple('Out',['t','Phi', 'Q','Qs', 'Qx', 'Qy', 'Qz'])
+    Out = namedtuple('Out',[ 't', 'Phi', 'Q', 'Qs', 'Qx', 'Qy', 'Qz' , 'BBA'])
 
     # use the sort_dim() function to ensure directionality is correct in each dimension
     x = sort_dim(x)
     y = sort_dim(y)[::-1]  # unique and descending
     z = sort_dim(z)[::-1]  # unique and descending
 
+    SHP = glacier.SHP
+    kx = glacier.kx
+    ky = glacier.ky
+    kz = glacier.kz
+    IBOUND = glacier.IBOUND
+    FQ = glacier.FQ
+    HI = glacier.HI
+    upper_surface = glacier.upper_surface
+    lower_surface = glacier.lower_surface
+    WaterTable = glacier.WaterTable
+    porosity = glacier.porosity
+    Ss = glacier.storage
+    cryoconite_locations = glacier.cryoconite_locations
+
     # determine shape of array from lengths of each dimension
-    SHP = Nz, Ny, Nx = len(z)-1, len(y)-1, len(x)-1
-    Nod = np.prod(SHP) # Nod is the total number of cells in the gird (x.y.z)
+    Nz, Ny, Nx = len(z)-1, len(y)-1, len(x)-1
+    Nod = np.prod(SHP) # Nod is the total number of cells in the grid (x.y.z)
 
-    # Nod = 0 when length of any dimension = 0
-    if Nod == 0:
-        raise AssertationError("Nx, Ny and Nz must be >= 1")
 
+    # set up output arrays
+    # number of timesteps is one less than length t due to zero-indexing
+    Nt = len(t)-1    
+    Out.Phi = np.zeros((Nt+1, Nod)) # Nt+1 times
+    Out.Q   = np.zeros((Nt  , Nod)) # Nt time steps
+    Out.Qs  = np.zeros((Nt  , Nod))
+    Out.Qx  = np.zeros((Nt, Nz, Ny, Nx-1))
+    Out.Qy  = np.zeros((Nt, Nz, Ny-1, Nx))
+    Out.Qz  = np.zeros((Nt, Nz-1, Ny, Nx))
+    Out.sf = np.zeros((Nt,Nz-1,Ny,Nx))
+    Out.BBA = np.zeros((Nt,Ny,Nx))
     # array where each element is the step size between array values,
     # reshaped into vectors
     # e.g. for array [0,2,4,6], diff = [2,2,2,2]
+
     dx = np.abs(np.diff(x).reshape(1, 1, Nx))
     dy = np.abs(np.diff(y).reshape(1, Ny, 1))
     dz = np.abs((np.diff(z)).reshape(Nz, 1, 1))
@@ -101,117 +126,135 @@ def TransientFlowModel(x, y, z, t, kx, ky, kz, Ss, FQ, HI, IBOUND, epsilon, uppe
     inact  = (IBOUND==0).reshape(Nod) # dito for inact
     fxhd   = (IBOUND<0).reshape(Nod) # dito for fxhd
 
-    # calculate inter-cell resistances
-    # Rx is the resistance across the horizontal cell faces aligned in the x direction
-    # Ry is the resistance across the horizontal cell faces aligned in the y direction
-    # Rz is the resistance across the vertical cell faces
-    Rx1 = 0.5*dx / (dy*dz) / kx
-    Rx2 = Rx1
-    Ry1 = 0.5*dy / (dz*dx) / ky
-    Ry2 = Ry1
-    Rz1 = 0.5*dz / (dx*dy) / kz
-    Rz2 = Rz1
-
-    # make inactive cells infinite resistance
-    Rx1[inact.reshape(SHP)] = np.inf
-    Rx2[inact.reshape(SHP)] = np.inf
-    Ry1[inact.reshape(SHP)] = np.inf
-    Rz1[inact.reshape(SHP)] = np.inf
-    
-    # conductances between adjacent cells
-    # size of the arrays is dimension length - 2 because
-    # in each dimension there are faces that do not have neighboursat either edge
-    # this will be replicated in the cell number arrays IE,IW,IS...
-
-    Cx = 1 / (Rx1[  :, :,  :-1] + Rx2[:, : , 1:])
-    Cy = 1 / (Ry1[  :, :-1,:  ] + Ry2[:, 1:, : ])
-    Cz = 1 / (Rz1[:-1, :,  :  ] + Rz2[1:, :, : ])
-
-    # storage term, variable dt not included
-    Cs = (Ss*(dx*dy*dz) / epsilon).ravel()
-
-    # NOD reshapes Nod to SHP such that the  
-    NOD = np.arange(Nod).reshape(SHP)
-
-    # grab cell numbers for neighbours on each side
-    # each of these arrays are shifted one element in the appropriate direction
-    IE = NOD[:, :, 1:] # numbers of the eastern neighbors of each cell
-    IW = NOD[:, :, :-1] # same western neighbors
-    IN = NOD[:, :-1,:] # same northern neighbors
-    IS = NOD[:, 1:,:] # southern neighbors
-    IT = NOD[:-1,:,:] # top neighbors
-    IB = NOD[1:,:,:] # bottom neighbors
-
-    R = lambda x : x.ravel() # define lamdba function for ravelling arrays into vectors,
-    #just to make the following expression more readable
-
-    # Here, The arrays of conductances and resistances for x, y and z oriented faces are
-    # first ravelled and then concatenated along common dimensions (i.e. a matrix is 
-    # generated where each column contains the values for R or C for x,y or z orientation).
-    # The same is then applied twice to the numbers of cells in each direction, first
-    # creating an array ordered E,W,N,S,B,T then reveersing each pair: W,E,S,N,T,B. The 
-    # final tuple contains the row and column indexes, Nod. The result is a 3-D sparse matrix
-    # where each element has a conductance and the indexes of the cell either side of it in
-    # each dimension.
-
-    # scipy's compressed sparse column matrix (csc) is used to enable memory efficient storage
-    # of the arrays and to format for linear algebraic operations, optimised for column-wise
-    # operations.
-
-    A = sp.csc_matrix(( np.concatenate(( R(Cx), R(Cx), R(Cy), R(Cy), R(Cz), R(Cz)) ),
-    (np.concatenate(( R(IE), R(IW), R(IN), R(IS), R(IB), R(IT)) ),\
-        np.concatenate(( R(IW), R(IE), R(IS), R(IN), R(IT), R(IB)) ))),(Nod,Nod))
-
-    # the sign is reversed and the coefficient vector representing Ss(V/epsilon*delta_t)*ht
-    # (i.e. water released from storage over timestep epsilon*delta_t) is added to the 
-    # matrix primary diagonal (i.e. to those elements where the C value matches up with
-    # an appropriate cell number for a neighbour in the correct direction - where Cx (left)
-    # coincides with index of neighbour adjacent to the left)
-
-    A = -A + sp.diags(np.array(A.sum(axis=1))[:,0])
-    
-    # number of timesteps is one less than length t due to zero-indexing
-    Nt = len(t)-1
-
-    # set up output arrays
-    Out.Phi = np.zeros((Nt+1, Nod)) # Nt+1 times
-    Out.Q   = np.zeros((Nt  , Nod)) # Nt time steps
-    Out.Qs  = np.zeros((Nt  , Nod))
-    Out.Qx  = np.zeros((Nt, Nz, Ny, Nx-1))
-    Out.Qy  = np.zeros((Nt, Nz, Ny-1, Nx))
-    Out.Qz  = np.zeros((Nt, Nz-1, Ny, Nx))
-    Out.sf = np.zeros((Nt,Nz-1,Ny,Nx))
-
-    # reshape input arrays to vectors using our ravel shorthand R
-    # to enable vector multiplication with system matrix A
-
-    FQ = R(FQ);  HI = R(HI);  Cs = R(Cs)
-
-    # initialize heads
-    Out.Phi[0] = HI
-
-    # solve heads at active locations at t_i+eps*dt_i
-    Nt=len(t)  # for heads, at all times Phi at t[0] = initial head
-
-    Ndt=len(np.diff(t)) # for flows, average within time step
 
     for idt, dt in enumerate(np.diff(t)):
 
+        # the iterator is a tuple - the first element (idt) is the index or "step number" (0,1,2,3)
+        # while the second element (dt) is equal to the step size, therefore, 
+        # idt is the current timestep and it is set to the following timestep (idt+1)
+        # timestep
         it = idt + 1
-    
-        # compute right hand side of equation
+
+        # calculate inter-cell resistances
+        # Rx is the resistance across the horizontal cell faces aligned in the x direction
+        # Ry is the resistance across the horizontal cell faces aligned in the y direction
+        # Rz is the resistance across the vertical cell faces
+        Rx1 = 0.5*dx / (dy*dz) / kx
+        Rx2 = Rx1
+        Ry1 = 0.5*dy / (dz*dx) / ky
+        Ry2 = Ry1
+        Rz1 = 0.5*dz / (dx*dy) / kz
+        Rz2 = Rz1
+
+        # make inactive cells infinite resistance
+        Rx1[inact.reshape(SHP)] = np.inf
+        Rx2[inact.reshape(SHP)] = np.inf
+        Ry1[inact.reshape(SHP)] = np.inf
+        Rz1[inact.reshape(SHP)] = np.inf
+        
+        # conductances between adjacent cells
+        # size of the arrays is dimension length - 2 because
+        # in each dimension there are faces that do not have neighbours at either edge
+        # this will be replicated in the cell number arrays IE,IW,IS...
+
+        Cx = 1 / (Rx1[  :, :,  :-1] + Rx2[:, : , 1:])
+        Cy = 1 / (Ry1[  :, :-1,:  ] + Ry2[:, 1:, : ])
+        Cz = 1 / (Rz1[:-1, :,  :  ] + Rz2[1:, :, : ])
+
+        # storage term, variable dt not included
+        Cs = (Ss*(dx*dy*dz) / epsilon).ravel()
+
+        # reshape Nod to SHP
+        NOD = np.arange(Nod).reshape(SHP)
+
+        # grab cell numbers for neighbours on each side
+        # each of these arrays are shifted one element in the appropriate direction
+        IE = NOD[:, :, 1:] # numbers of the eastern neighbors of each cell
+        IW = NOD[:, :, :-1] # same western neighbors
+        IN = NOD[:, :-1,:] # same northern neighbors
+        IS = NOD[:, 1:,:] # southern neighbors
+        IT = NOD[:-1,:,:] # top neighbors
+        IB = NOD[1:,:,:] # bottom neighbors
+
+        R = lambda x : x.ravel() # define lamdba function for ravelling arrays into vectors,
+        #just to make the following expression more readable
+
+        # Here, The arrays of conductances and resistances for x, y and z oriented faces are
+        # first ravelled and then concatenated into one continuous 1D vector. Then the arrays of
+        # N, S, E, W, U and D neighbour indexes (IE, IW...) are treated identically to
+        # produce vectors of neighbour indices that aligns with the corresponding
+        # conductance value C. For eample, IW, IE gives the indexes of the L and R neighbours
+        # of cell i for which the conductance is given in Cx. This is all organised into a scipy
+        # sparse matrix which stores the row and column indices in a tuple and the associated
+        # conductance value in "data". The final tuple in the sparse matrix constructor reshapes the
+        # sparse matrix to (Nod,Nod) which gives row length and column length both to be equal to 
+        # the number of possible cell combinations in the finite difference grid. Therefore, for 
+        # every possible combination of row and column index there is a an associated value for the 
+        # conductance in each direction. For most combinations of rows and columns, the C values 
+        # in all directions will be zero because they are not within the local (6 cell) neighbourhood 
+        # of any particular cell. The tuple of row and column indices passed to the sparse matrix
+        # constructor defines those cells that have non-zero conductance (i.e. combinations of cells
+        # that are within a 6-cell neighbourhood). A list of all individual cells in the finite 
+        # difference grid s found by following the matrix primary diagonal.
+
+        A = sp.csc_matrix(( np.concatenate(( R(Cx), R(Cx), R(Cy), R(Cy), R(Cz), R(Cz))),
+        (np.concatenate(( R(IE), R(IW), R(IN), R(IS), R(IB), R(IT)) ),\
+            np.concatenate(( R(IW), R(IE), R(IS), R(IN), R(IT), R(IB)) ))),(Nod,Nod))
+
+        # Shape of A is ((x * y * z),( x * y * z)) because for every cell A stores
+        # its conductance relation with every other cell in the finite difference grid. IE, IW... are
+        # arrays shifted by 1 in each dimensions and therefore represent the pairs of indices for 
+        # adjacent cells (i.e. non-zeros conductance). The total conductance out of a cell is the 
+        # row-wise sum of conductances Cx (L) + Cx (R) + Cy (UP) + Cy (DP) + Cz (UP) + Cz (DN). 
+        # 
+        # Since the square matrix has a row for each cell and a column for each cell, the off-diagonal
+        # elements represent the conductance relations between each cell and all others. This means the 
+        # diagonal elements remain empty because they represent the reltion of the cell with itself.
+        # We then fill the empty diagonal with the row sums, because this is equivalent to assigning
+        # the total conductance to the cell.
+        # 
+        # The physical meaning of the diagonal matrix element is the amount of water flowing from 
+        # node i to all its adjacent nodes if the head in node i is exactly 1 m higher than that 
+        # of its neighbors. 
+
+        A = -A + sp.diags(np.array(A.sum(axis=1))[:,0])
+        
+        # reshape input arrays to vectors using our ravel shorthand R
+        # to enable vector multiplication with system matrix A
+
+        FQ = R(FQ);  HI = R(HI);  Cs = R(Cs)
+
+        # initialize heads
+        Out.Phi[0] = HI
+
+        # solve heads at active locations at t_i+eps*dt_i
+
+        Nt=len(t)  # for heads, at all times Phi at t[0] = initial head
+
+        Ndt=len(np.diff(t)) # for flows, average within time step
+
+        # compute right hand side of equation as the dot product of matrix A and vector Phi (head at previous timestep)
+        # FQ is a vector of extraction terms, Cs is a vector of storage terms, slicing to [:,fxhd] restricts the 
+        # computation to the fixed heads in the grid - this effectively adjusts RHS to take account of flows in/out of
+        # fixed head nodes as well as storage and source/extraction terms that are buried in FQ. The result is a complete
+        # RHS term that can be used to solve the matrix computation for the unknown head values in the next time step.
+
+        # i.e. RHS = source_and_extraction - (system_matrix + storage_on_diagonal) dot (hydraulic head at previous timestep)
         RHS = FQ - (A + sp.diags(Cs / dt))[:,fxhd].dot(Out.Phi[it-1][fxhd]) 
 
-        # use RHS (computed from knowns) to solve matrix computation for next time step
+        # use RHS (computed from knowns in previous timestep) to solve matrix computation for unknown heads (vector Phi) in next time step
+        # The matrix is restricted to the active cells.
+
+        # i.e. head_now = solve(matrixA + storage_on_diagonal, RHS + storage / head_then * timestep)
         Out.Phi[it][active] = spsolve( (A + sp.diags(Cs / dt))[active][:,active], RHS[active] + Cs[active] / dt*Out.Phi[it-1][active])
 
-        # calculate net flow into cell
+        # calculate net flow into cell as dot product of system matrix and current head values
         Out.Q[idt]  = A.dot(Out.Phi[it])
 
-        # calculate net flow out of cell
+        # calculate net flow released from storage as change in head multiplied by specific storage
         Out.Qs[idt] = -Cs/dt*(Out.Phi[it]-Out.Phi[it-1])
 
-        # calculate flows across cell faces in each dimension
+        # calculate flows across cell faces in each dimension by taking flows in individual dimensions
         Out.Qx[idt] =  -np.diff( Out.Phi[it].reshape(SHP), axis=2)*Cx
         Out.Qy[idt] =  +np.diff( Out.Phi[it].reshape(SHP), axis=1)*Cy
         Out.Qz[idt] =  +np.diff( Out.Phi[it].reshape(SHP), axis=0)*Cz
@@ -229,26 +272,90 @@ def TransientFlowModel(x, y, z, t, kx, ky, kz, Ss, FQ, HI, IBOUND, epsilon, uppe
             for i in range(Nz+1):
                 
                 if i==0:
-                    test = Out.Phi[it].ravel()
-                    test[0:len(upper)] = np.where(test[0:len(upper)]>upper,upper,test[0:len(upper)])
-                    test[0:len(lower)] = np.where(test[0:len(lower)]<lower,lower,test[0:len(lower)])
-                    Out.Phi[0] = test
+                    Phi = Out.Phi[it].ravel()
+                    Phi[0:len(upper)] = np.where(Phi[0:len(upper)]>upper,upper,Phi[0:len(upper)])
+                    Phi[0:len(lower)] = np.where(Phi[0:len(lower)]<lower,lower,Phi[0:len(lower)])
+                    Out.Phi[0] = Phi
 
                 elif (i > 0) & (i < Nz):
-                    test = Out.Phi[it].ravel()
-                    test[len(upper)*i:len(upper)*(i+1)] = np.where(test[len(upper)*i:len(upper)*(i+1)]>upper,upper,test[len(upper)*i:len(upper)*(i+1)])
-                    test[len(lower)*i:len(lower)*(i+1)] = np.where(test[len(lower)*i:len(lower)*(i+1)]<lower,lower,test[len(lower)*i:len(lower)*(i+1)])
-                    Out.Phi[i] = test
+                    Phi = Out.Phi[it].ravel()
+                    Phi[len(upper)*i:len(upper)*(i+1)] = np.where(Phi[len(upper)*i:len(upper)*(i+1)]>upper,upper,Phi[len(upper)*i:len(upper)*(i+1)])
+                    Phi[len(lower)*i:len(lower)*(i+1)] = np.where(Phi[len(lower)*i:len(lower)*(i+1)]<lower,lower,Phi[len(lower)*i:len(lower)*(i+1)])
+                    Out.Phi[i] = Phi
 
                 elif i == Nz:
-                    test = Out.Phi[it].ravel()
-                    test[len(test)-len(upper):len(test)] = np.where(test[len(test)-len(upper):len(test)]>upper,upper,test[len(test)-len(upper):len(test)])
-                    test[len(test)-len(lower):len(test)] = np.where(test[len(test)-len(lower):len(test)]<lower,lower,test[len(test)-len(lower):len(test)])
-                    Out.Phi[Nz] = test
+                    Phi = Out.Phi[it].ravel()
+                    Phi[len(Phi)-len(upper):len(Phi)] = np.where(Phi[len(Phi)-len(upper):len(Phi)]>upper,upper,Phi[len(Phi)-len(upper):len(Phi)])
+                    Phi[len(Phi)-len(lower):len(Phi)] = np.where(Phi[len(Phi)-len(lower):len(Phi)]<lower,lower,Phi[len(Phi)-len(lower):len(Phi)])
+                    Out.Phi[Nz] = Phi
 
                 else: 
                     print("Nz out of range")
-    
+
+
+                if MELT_CALCS:
+
+                    #########################
+                    # BEGIN MELT CALCULATIONS
+
+                    # First calculate the effective grain diameters
+                    density = (1-glacier.porosity) * 917 # bulk density is 1-porosity * pure-ice density
+                    SSA = 17.6 - (0.02 * density)
+                    reff = (6/(SSA / 917))/2 
+                    # round reff and density down to nearest 100 for consistency with snicar LUT
+                    reff = (reff / 100).astype(int) * 100 
+                    
+                    reff = np.where(reff>=1500,1500,reff)
+                
+                    density = (density/100).astype(int)*100
+
+                    # TODO: make multiple LUTs
+
+                    if glacier.algae == 0:
+                        LUT = np.load('SNICAR_LUT.npy')
+                    elif glacier.algae == 1:
+                        LUT = np.load('SNICAR_LUT.npy')
+                    elif glacier.algae == 2:
+                        LUT = np.load('SNICAR_LUT.npy')
+                    elif glacier.algae == 3:
+                        LUT = np.load('SNICAR_LUT.npy')
+                    else:
+                        raise("Value for algal loading is invalid: please choose integer between 0 and 3")
+
+                    albedo = np.zeros((SHP[1],SHP[2]))
+                    reff = reff.ravel()
+                    density = density.ravel()
+
+                    for i in range(len(albedo)):
+                        idx_rds = int(reff[i]/100)-1
+                        idx_dens = int(density[i]/100)-1
+                        albedo[i] = LUT[idx_rds,idx_dens]
+                        print(albedo)
+                    
+                    Out.BBA[it-1] = albedo.reshape(SHP[1],SHP[2])
+
+                    #####
+                    # NOW USE BBA TO DRIVE MELT MODEL PIXELWISE!!!!!
+
+                    n_cpus = mp.cpu_count()
+                    albedo_chunks = np.array_split(albedo,n_cpus)
+
+
+                    with mp.Pool(processes=n_cpus) as pool:
+
+                        # starts the sub-processes without blocking
+                        # pass the chunk to each worker process
+                        melt = pool.map(runit,albedo)
+
+                    melt = np.reshape(np.array(melt),[Ny,Nx])
+
+                    print(melt)
+
+                    ### NOW DISTRIBUTE MELTING OVER VERTICAL LAYERS (EXPONENTIAL DECR FROM SURFACE)
+                    ### THEN CALCULATE VOLUME LOSS AND ADJUST POROSITY FOR NEXT TIME STEP
+                    ### ADD MELTING TO OUT nTUPLE
+                    ### THEN CREATE MORE LUTs FOR ALGAL CONCNs
+
     # reshape Phi to shape of grid
     Out.Phi = Out.Phi.reshape((Nt,) + SHP)
     Out.Q   = Out.Q.reshape( (Ndt,) + SHP)
@@ -258,4 +365,40 @@ def TransientFlowModel(x, y, z, t, kx, ky, kz, Ss, FQ, HI, IBOUND, epsilon, uppe
         Out.Phi[it,:,moulin_location[0][0]:moulin_location[0][1],moulin_location[1][0]:moulin_location[1][1]] = 0
 
 
+    #################################
+    # ADD SNICAR LUT ASSIGNMENT HERE
+    # USE RETURNED BBA TO DRIVE MELT MODEL
+    # USE MELT FROM MELT MODEL TO ADJUST POROSITY FOR NEXT TIME STEP
+    ####################################
+
     return Out # all outputs in a named tuple for easy access
+
+
+def runit(alb):
+
+    lat = 67.0666
+    lon = -49.38
+    lon_ref = 0
+    summertime = 0
+    slope = 1.
+    aspect = 90.
+    elevation = 1020.
+    albedo = alb
+    roughness = 0.005
+    met_elevation = 1020.
+    lapse = 0.0065
+
+    day = 202
+    time = 1200
+    inswrad = 571
+    avp = 900
+    airtemp = 5.612
+    windspd = 3.531
+
+    SWR,LWR,SHF,LHF = ebm.calculate_seb(lat, lon, lon_ref, day, time, summertime, slope, aspect, elevation,
+                                        met_elevation, lapse, inswrad, avp, airtemp, windspd, albedo, roughness)
+
+    sw_melt, lw_melt, shf_melt, lhf_melt, total = ebm.calculate_melt(
+        SWR,LWR,SHF,LHF, windspd, airtemp)
+
+    return total
