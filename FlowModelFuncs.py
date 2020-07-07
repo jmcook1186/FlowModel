@@ -4,6 +4,7 @@ from scipy.sparse.linalg import spsolve
 from collections import namedtuple
 import multiprocessing as mp
 import ebmodel as ebm
+from math import factorial
 
 
 def sort_dim(x, tol=0.0001):
@@ -18,6 +19,37 @@ def sort_dim(x, tol=0.0001):
     else:
         x = np.sort(x)
         return x[np.hstack((np.diff(x) > +tol, True))]
+
+
+def runit(alb):
+    
+    lat = 67.0666
+    lon = -49.38
+    lon_ref = 0
+    summertime = 0
+    slope = 1.
+    aspect = 90.
+    elevation = 1020.
+    albedo = alb
+    roughness = 0.005
+    met_elevation = 1020.
+    lapse = 0.0065
+
+    day = 202
+    time = 1200
+    inswrad = 571
+    avp = 900
+    airtemp = 5.612
+    windspd = 3.531
+
+    SWR,LWR,SHF,LHF = ebm.calculate_seb(lat, lon, lon_ref, day, time, summertime, slope, aspect, elevation,
+                                        met_elevation, lapse, inswrad, avp, airtemp, windspd, albedo, roughness)
+
+    sw_melt, lw_melt, shf_melt, lhf_melt, total = ebm.calculate_melt(
+        SWR,LWR,SHF,LHF, windspd, airtemp)
+
+    return sw_melt,shf_melt
+
 
 
 def TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, MELT_CALCS, moulin_location):
@@ -76,7 +108,7 @@ def TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, MELT_
     from scipy.sparse.linalg import spsolve
     import matplotlib.pyplot as plt
 
-    Out = namedtuple('Out',[ 't', 'Phi', 'Q', 'Qs', 'Qx', 'Qy', 'Qz' , 'BBA'])
+    Out = namedtuple('Out',[ 't', 'Phi', 'Q', 'Qs', 'Qx', 'Qy', 'Qz' , 'BBA', 'melt'])
 
     # use the sort_dim() function to ensure directionality is correct in each dimension
     x = sort_dim(x)
@@ -113,6 +145,7 @@ def TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, MELT_
     Out.Qz  = np.zeros((Nt, Nz-1, Ny, Nx))
     Out.sf = np.zeros((Nt,Nz-1,Ny,Nx))
     Out.BBA = np.zeros((Nt,Ny,Nx))
+    Out.melt = np.zeros((Nt,Nz,Ny,Nx))
     # array where each element is the step size between array values,
     # reshaped into vectors
     # e.g. for array [0,2,4,6], diff = [2,2,2,2]
@@ -269,25 +302,26 @@ def TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, MELT_
         lower = lower_surface.ravel()
 
         if constrain_head_to_WC:
+            
             for i in range(Nz+1):
                 
                 if i==0:
                     Phi = Out.Phi[it].ravel()
                     Phi[0:len(upper)] = np.where(Phi[0:len(upper)]>upper,upper,Phi[0:len(upper)])
                     Phi[0:len(lower)] = np.where(Phi[0:len(lower)]<lower,lower,Phi[0:len(lower)])
-                    Out.Phi[0] = Phi
+                    Out.Phi[it] = Phi
 
                 elif (i > 0) & (i < Nz):
                     Phi = Out.Phi[it].ravel()
                     Phi[len(upper)*i:len(upper)*(i+1)] = np.where(Phi[len(upper)*i:len(upper)*(i+1)]>upper,upper,Phi[len(upper)*i:len(upper)*(i+1)])
                     Phi[len(lower)*i:len(lower)*(i+1)] = np.where(Phi[len(lower)*i:len(lower)*(i+1)]<lower,lower,Phi[len(lower)*i:len(lower)*(i+1)])
-                    Out.Phi[i] = Phi
+                    Out.Phi[it] = Phi
 
                 elif i == Nz:
                     Phi = Out.Phi[it].ravel()
                     Phi[len(Phi)-len(upper):len(Phi)] = np.where(Phi[len(Phi)-len(upper):len(Phi)]>upper,upper,Phi[len(Phi)-len(upper):len(Phi)])
                     Phi[len(Phi)-len(lower):len(Phi)] = np.where(Phi[len(Phi)-len(lower):len(Phi)]<lower,lower,Phi[len(Phi)-len(lower):len(Phi)])
-                    Out.Phi[Nz] = Phi
+                    Out.Phi[it] = Phi
 
                 else: 
                     print("Nz out of range")
@@ -302,15 +336,13 @@ def TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, MELT_
                     density = (1-glacier.porosity) * 917 # bulk density is 1-porosity * pure-ice density
                     SSA = 17.6 - (0.02 * density)
                     reff = (6/(SSA / 917))/2 
-                    # round reff and density down to nearest 100 for consistency with snicar LUT
-                    reff = (reff / 100).astype(int) * 100 
                     
+                    # round reff and density down to nearest 100 for consistency with snicar LUT
+                    reff = (reff / 100).astype(int) * 100    
                     reff = np.where(reff>=1500,1500,reff)
-                
                     density = (density/100).astype(int)*100
-
-                    # TODO: make multiple LUTs
-
+                    
+                    # load appropriate LUT depending on user-defined algal load
                     if glacier.algae == 0:
                         LUT = np.load('SNICAR_LUT.npy')
                     elif glacier.algae == 1:
@@ -322,39 +354,77 @@ def TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, MELT_
                     else:
                         raise("Value for algal loading is invalid: please choose integer between 0 and 3")
 
+                    # ravel the input vars to help with common indexing
                     albedo = np.zeros((SHP[1],SHP[2]))
                     reff = reff.ravel()
                     density = density.ravel()
 
-                    for i in range(len(albedo)):
-                        idx_rds = int(reff[i]/100)-1
-                        idx_dens = int(density[i]/100)-1
-                        albedo[i] = LUT[idx_rds,idx_dens]
-                        print(albedo)
-                    
+                    # loop through pixels and grab the albedo from the var idxs
+                    # the variable indexes are the nearest integer to their
+                    # values /100 -1.
+
+                    for a in range(len(albedo)):
+                        idx_rds = int(reff[a]/100)-1
+                        idx_dens = int(density[a]/100)-1
+                        albedo[a] = LUT[idx_rds,idx_dens]
+
+                    # add BBA to the Out n-tuple                    
                     Out.BBA[it-1] = albedo.reshape(SHP[1],SHP[2])
 
-                    #####
-                    # NOW USE BBA TO DRIVE MELT MODEL PIXELWISE!!!!!
-
-                    n_cpus = mp.cpu_count()
-                    albedo_chunks = np.array_split(albedo,n_cpus)
-
-
-                    with mp.Pool(processes=n_cpus) as pool:
+                    # configure multiprocessing pool for driving ebmodel
+                    # with BBA values
+                    n_cpus = mp.cpu_count() # coutn available cores
+                    albedo_chunks = np.array_split(albedo,n_cpus) # chunk albedo
+                    
+                    pool = mp.Pool(processes = n_cpus)
+                    rmelt, tmelt = zip(*pool.map(runit,albedo))
 
                         # starts the sub-processes without blocking
                         # pass the chunk to each worker process
-                        melt = pool.map(runit,albedo)
+                        # runit function is defined in this script,
+                        # pass the ravelled BBAs
 
+                    
+                    #### HERE RMELT AND TMELT ARE PARTITIONED
+                    # RADIATIVE AND TUBULENT INDUCED MELTING
+                    # CURRENTLY ASSUMES RMELT TO BE TOTAL MELTING
+                    # NEED TO TREAT R AND T SEPARATELY
+
+                    melt = rmelt
+                    # reshape the ravelled melt values to grid shape
                     melt = np.reshape(np.array(melt),[Ny,Nx])
 
-                    print(melt)
+                    ### NOW DISTRIBUTE MELTING OVER VERTICAL LAYERS
+                    # melt is only predicted for surface
+                    # here, calculate the melt at each cell center
+                    # this is done by approximating an exponential decay
+                    # by dividing the surface melt by the factorial of the 
+                    # depth (i.e. at depth = 3, melt = surface_melt / (3+2+1)
+                    # at the cell center, the melt is the mean of the upper
+                    # and lower boundary melt.
 
-                    ### NOW DISTRIBUTE MELTING OVER VERTICAL LAYERS (EXPONENTIAL DECR FROM SURFACE)
+                    # melt3d will be melt at each vertical cell boundary
+                    melt3d = np.zeros(shape =(len(z),Ny,Nx))
+                    # melt_at_cell_centers is melt midway between lower and upper cell boundary
+                    melt_at_cell_centers = np.zeros(shape =(Nz,Ny,Nx))
+                    # upper surface is melt predicted by ebmodel
+                    melt3d[0,:,:] = melt
+
+                    # for each vertical layer boundary melt is divided by factorial
+                    # of depth below surface
+                    for p in np.arange(1,len(z),1):
+                        melt3d[p,:,:] = melt/factorial(p)
+
+                    # melt at cell centers is mean of melt at upper and lower boundaries
+                    for q in np.arange(0,Nz,1): 
+                        melt_at_cell_centers[q,:,:] = (melt3d[q,:,:]+melt3d[q+1,:,:])/2
+                    
+                    # send cell center melt to Out n-tuple
+                    Out.melt[it-1] = melt_at_cell_centers
+
                     ### THEN CALCULATE VOLUME LOSS AND ADJUST POROSITY FOR NEXT TIME STEP
-                    ### ADD MELTING TO OUT nTUPLE
                     ### THEN CREATE MORE LUTs FOR ALGAL CONCNs
+                    ### THEN PUT EBMODEL VALUES IN FUNCTION CALL INSTEAD OF HARDCODING
 
     # reshape Phi to shape of grid
     Out.Phi = Out.Phi.reshape((Nt,) + SHP)
@@ -365,40 +435,4 @@ def TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, MELT_
         Out.Phi[it,:,moulin_location[0][0]:moulin_location[0][1],moulin_location[1][0]:moulin_location[1][1]] = 0
 
 
-    #################################
-    # ADD SNICAR LUT ASSIGNMENT HERE
-    # USE RETURNED BBA TO DRIVE MELT MODEL
-    # USE MELT FROM MELT MODEL TO ADJUST POROSITY FOR NEXT TIME STEP
-    ####################################
-
     return Out # all outputs in a named tuple for easy access
-
-
-def runit(alb):
-
-    lat = 67.0666
-    lon = -49.38
-    lon_ref = 0
-    summertime = 0
-    slope = 1.
-    aspect = 90.
-    elevation = 1020.
-    albedo = alb
-    roughness = 0.005
-    met_elevation = 1020.
-    lapse = 0.0065
-
-    day = 202
-    time = 1200
-    inswrad = 571
-    avp = 900
-    airtemp = 5.612
-    windspd = 3.531
-
-    SWR,LWR,SHF,LHF = ebm.calculate_seb(lat, lon, lon_ref, day, time, summertime, slope, aspect, elevation,
-                                        met_elevation, lapse, inswrad, avp, airtemp, windspd, albedo, roughness)
-
-    sw_melt, lw_melt, shf_melt, lhf_melt, total = ebm.calculate_melt(
-        SWR,LWR,SHF,LHF, windspd, airtemp)
-
-    return total
