@@ -4,7 +4,8 @@ class Glacier:
 
     def __init__(self, x, y, z, cell_spacing_xy, cell_spacing_z, base_elevation, WC_thickness0, porosity0, specific_retention, WaterTable0,\
     cryoconite_coverage, melt_rate0, rainfall0, slope, kxy, kz, loss_at_edges, loss_at_terminus,\
-    stream_location, moulin_location, moulin_extr_rate, algae):
+    stream_location, moulin_location, moulin_extr_rate, algae, lat, lon, day, time, aspect,\
+        roughness, lapse, windspd, airtemp, inswrd, avp):
 
         SHP = (len(z)-1, len(y)-1, len(x)-1)
 
@@ -17,6 +18,7 @@ class Glacier:
         rainfall = np.zeros(SHP)+rainfall0
         porosity = np.ones(SHP)*porosity0
         Ss = porosity - specific_retention 
+        elevation = base_elevation
 
         for i in range(upper_surface.shape[0]):
 
@@ -81,5 +83,18 @@ class Glacier:
         self.storage = Ss
         self.cryoconite_locations = cryoconite_locations
         self.algae = algae
+        self.lat = lat
+        self.lon = lon
+        self.day = day
+        self.time = time
+        self.slope = slope
+        self.roughness = roughness
+        self.lapse = lapse
+        self.windspd = windspd
+        self.airtemp = airtemp
+        self.inswrd = inswrd
+        self.avp = avp
+        self.elevation = elevation
+        self.aspect = aspect
 
         return 

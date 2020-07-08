@@ -32,16 +32,20 @@ resolution of 1m, 5 hydraulic head values are required). This is achieved using 
 # program config
 savepath = '/home/joe/Code/FlowModel/Outputs/'
 epsilon = 0.67
-plot_types = ["Cell Export at Terminus", "Cumulative Cell Export at Terminus"] # select what to plot, options are Q (net inflow to cells), Qs (water released from storage), Qx (flow across lateral cell boundaries)
+plot_types = ["Q","Phi","Cell Export at Terminus", "Cumulative Cell Export at Terminus"] # select what to plot, options are Q (net inflow to cells), Qs (water released from storage), Qx (flow across lateral cell boundaries)
 #Qy (flow across longitudinal cell boundaries), Phi (hydraulic head at cell centres). Provide as list of strings or set to "None".
 plot_layer = 0 # which vertical layer to plot (0 = top, -1 = bottom)
 figsize = (15,15)
-t = np.arange(0,5,1) # time to run model over in days
+t = np.arange(0,1,0.01) # time to run model over in days
+lat = 67.04 # site latitude
+lon = 49.99 # site longitude
+day = 202 # day of year
+time = 1500 # time of day (24hr)
 
 # grid size
 length = 200
 width = 100
-WC_thickness0 = 4 # initial WC thickness at t=0
+WC_thickness0 = 5 # initial WC thickness at t=0
 cell_spacing_xy = 1 # size of cells in meters in horizontal dimension
 cell_spacing_z = 1 # size of cells in meters in vertical dimension
 x = np.arange(0, width, cell_spacing_xy)
@@ -52,6 +56,8 @@ kz = 0.75
 
 # environmental variables
 slope = 5 # topographic slope from upper to lower boundary, 1 = lose as much height as horizontal distance
+aspect = 180 # degrees, N is 0
+roughness = 0.005 # default is 0.005
 base_elevation = 100 # raise entire surface this far above sea level
 WaterTable0 = 0.3 # proportion of WC filled with water at t=0
 melt_rate0 = 0.00001 # water added by melting in m3/d
@@ -63,10 +69,17 @@ moulin_location = None #((50,60),(50,60)) # give cell indices for horizontal ext
 moulin_extr_rate = 200 #rate of extraction via moulin, m3/d
 stream_location = None #((0,-10),(20,30))
 constrain_head_to_WC = True # toggling this ON means the hydraulic head cannot rise above the upper glacier surface nor drop below the lower WC boundary
-porosity0 = 0.1 # initial porosity in each cell
+porosity0 = 0.3 # initial porosity in each cell
 specific_retention = 0.05 # tune-able, describes proportion of water left behind after aquifer drains - set to value for fine gravel from Bear et al (1973)
 MELT_CALCS = True # toggle whether to initiate the albedo-melt-porosity feedback calculations
 algae = 0 # select from discrete "levels" of surface glacier algal loading between 0 (clean) and 3 (high concentration)
+
+# meteorological variables
+lapse = 0.65 
+windspd = 1.5 
+airtemp = 0.01
+inswrd = 55 
+avp = 900 
 
 #microbial variables
 cell0 = 10000 # initial cell concentration in cell/mL
@@ -76,10 +89,11 @@ cellD = 0.35 # death rate
 # BUILD GLACIER
 glacier = Glacier(x, y, z, cell_spacing_xy, cell_spacing_z, base_elevation, WC_thickness0, porosity0, specific_retention, WaterTable0, \
     cryoconite_coverage, melt_rate0, rainfall0, slope, kxy, kz, loss_at_edges, loss_at_terminus,\
-    stream_location, moulin_location, moulin_extr_rate, algae)
+    stream_location, moulin_location, moulin_extr_rate, algae, lat, lon, day, time, aspect,\
+        roughness, lapse, windspd, airtemp, inswrd, avp)
 
 # CALCULATE FLOWS
-Out = TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, MELT_CALCS, moulin_location)
+Out,porosity = TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, MELT_CALCS, moulin_location)
 
 # CALCULATE COMPONENT VECTORS
 X,Y,Z,U,V,W = vector_arrows(Out, x, y, z, plot_layer)
