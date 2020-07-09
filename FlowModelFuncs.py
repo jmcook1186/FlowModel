@@ -22,7 +22,7 @@ def sort_dim(x, tol=0.0001):
 
 
 
-def TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, MELT_CALCS, moulin_location):
+def TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, rainfall0, MELT_CALCS, moulin_location):
     
     '''Returns computed heads of steady state 3D finite difference grid.Steady state 3D Finite Difference Model 
     that computes the heads a 3D ndarray.
@@ -90,15 +90,17 @@ def TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, MELT_
     ky = glacier.ky
     kz = glacier.kz
     IBOUND = glacier.IBOUND
-    FQ = glacier.FQ
+    FQinit = glacier.FQ
     HI = glacier.HI
+    melt_rate_init = glacier.melt_rate_init
     upper_surface = glacier.upper_surface
     lower_surface = glacier.lower_surface
     WaterTable = glacier.WaterTable
     porosity = glacier.porosity
     Ss = glacier.storage
     cryoconite_locations = glacier.cryoconite_locations
-
+    rainfall = np.zeros(shape=(SHP))
+    rainfall[0,:,:] += rainfall0
 
     # determine shape of array from lengths of each dimension
     Nz, Ny, Nx = len(z)-1, len(y)-1, len(x)-1
@@ -132,6 +134,8 @@ def TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, MELT_
 
 
     for idt, dt in enumerate(np.diff(t)):
+
+        print("timestep = ", idt)
 
         # the iterator is a tuple - the first element (idt) is the index or "step number" (0,1,2,3)
         # while the second element (dt) is equal to the step size, therefore, 
@@ -226,8 +230,30 @@ def TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, MELT_
         # reshape input arrays to vectors using our ravel shorthand R
         # to enable vector multiplication with system matrix A
 
-        FQ = R(FQ);  HI = R(HI);  Cs = R(Cs)
 
+        # CONFIGURE SOURCE TERM FQ (water extractions and additions)
+        # in 1st time step use the user defined initial melt rate
+        # after 1st time step use calculated melt rate from MELT CALCS
+        # (if MELT_CALCS is toggled, if not, always use initial value)
+
+        if MELT_CALCS:
+
+            if idt == 0:
+                FQ = R(FQinit);  HI = R(HI);  Cs = R(Cs); rain = R(rainfall)
+                melt_rate = R(melt_rate_init)
+                FQ += (rain + melt_rate)
+
+            else:
+                rad_melt = R(melt_at_cell_centers)
+                tur_melt = R(tmelt)
+                FQ = R(FQinit) + rain + rad_melt
+                FQ[0:len(tur_melt)] -= tur_melt
+
+        else:
+            FQ = R(FQinit);  HI = R(HI);  Cs = R(Cs); rain = R(rainfall)
+            melt_rate = R(melt_rate_init)
+            FQ += (rain + melt_rate)        
+        
         # initialize heads
         Out.Phi[0] = HI
 
@@ -409,8 +435,12 @@ def TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, MELT_
             porosity += (melt_at_cell_centers/1000) # radiative flux increases porosity
             porosity[0,:,:] -= (tmelt/1000)  # turbulent flux decreases porosity (at surface)
             
-            FQ += melt_at_cell_centers.ravel() # + rmelt vol to hydro source term for next timestep
-            FQ[0:len(tmelt.ravel())] +=tmelt.ravel() # add surface lowering vol to source term 
+
+            ### CURRENTLY ADDING MELT EACH TIME STEP SO RESULT IS CUMULATIVE!
+            # i.e melt in t+1 = melt at t + melt at t+1
+            # instead of updating the melting term. Should atually add (melt at t+1 - melt at t)
+
+            
             ### WORK OUT VOLUME CHANGE AND UPDATE POROSITY
             ### THEN CREATE MORE LUTs FOR ALGAL CONCNs
             

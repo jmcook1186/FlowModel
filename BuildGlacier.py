@@ -62,13 +62,12 @@ class Glacier:
             HI[:,stream_location[0][0]:stream_location[0][1],stream_location[1][0]:stream_location[1][1]] = -1
             melt_rate[:,stream_location[0][0]:stream_location[0][1],stream_location[1][0]:stream_location[1][1]] = 0
 
-        FQ += melt_rate
-        FQ += rainfall
 
         IBOUND = np.ones(SHP)
         IBOUND[:, -1, :] = 0 # last row of model heads are prescribed (-1 head at base boundary)
         IBOUND[:, 0, :] = 0 # these cells are inactive (top boundary)
 
+        self.melt_rate_init = melt_rate
         self.SHP = SHP
         self.kx = kx
         self.ky = ky
