@@ -4,7 +4,7 @@ class Glacier:
 
     def __init__(self, x, y, z, cell_spacing_xy, cell_spacing_z, base_elevation, WC_thickness0, porosity0, specific_retention, WaterTable0,\
     cryoconite_coverage, melt_rate0, rainfall0, slope, kxy, kz, loss_at_edges, loss_at_terminus,\
-    stream_location, moulin_location, moulin_extr_rate, algae, lat, lon, day, time, aspect,\
+    stream_location, moulin_location, moulin_extr_rate, algal_coverage, lat, lon, day, time, aspect,\
         roughness, lapse, windspd, airtemp, inswrd, avp):
 
         SHP = (len(z)-1, len(y)-1, len(x)-1)
@@ -67,6 +67,29 @@ class Glacier:
         IBOUND[:, -1, :] = 0 # last row of model heads are prescribed (-1 head at base boundary)
         IBOUND[:, 0, :] = 0 # these cells are inactive (top boundary)
 
+        algal_map = np.zeros(shape = (SHP))
+        algal_idx = algal_map[0,:,:].ravel()
+        pixels = len(algal_idx)
+
+        idx0 = pixels*algal_coverage[0]/100
+        idx1 = pixels*algal_coverage[1]/100
+        idx2 = pixels*algal_coverage[2]/100
+        idx3 = pixels*algal_coverage[3]/100
+        idx4 = pixels*algal_coverage[4]/100
+        idx5 = pixels*algal_coverage[5]/100
+
+        algal_idx[0:int(idx0)] = 0
+        algal_idx[int(idx0):int(idx0+idx1)] = 1
+        algal_idx[int(idx0+idx1):int(idx0+idx1+idx2)] = 2
+        algal_idx[int(idx0+idx1+idx2):int(idx0+idx1+idx2+idx3)] = 3
+        algal_idx[int(idx0+idx1+idx2+idx3):int(idx0+idx1+idx2+idx3+idx4)] = 4
+        algal_idx[int(idx0+idx1+idx2+idx3+idx4):int(idx0+idx1+idx2+idx3+idx4+idx5)] = 5
+
+        np.random.shuffle(algal_idx)
+        algal_idx = algal_idx.reshape(algal_map[0,:,:].shape)
+        algal_map[0,:,:] = algal_idx
+    
+
         self.melt_rate_init = melt_rate
         self.SHP = SHP
         self.kx = kx
@@ -81,7 +104,7 @@ class Glacier:
         self.porosity = porosity
         self.storage = Ss
         self.cryoconite_locations = cryoconite_locations
-        self.algae = algae
+        self.algal_map = algal_map
         self.lat = lat
         self.lon = lon
         self.day = day

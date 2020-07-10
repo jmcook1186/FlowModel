@@ -2,9 +2,7 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
 from collections import namedtuple
-import ebmodel as ebm
-from math import factorial
-import dask
+from Melt_Calcs import melt_calcs
 
 
 def sort_dim(x, tol=0.0001):
@@ -22,7 +20,8 @@ def sort_dim(x, tol=0.0001):
 
 
 
-def TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, rainfall0, MELT_CALCS, moulin_location):
+def TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, rainfall0,\
+     MELT_CALCS, moulin_location, datapath):
     
     '''Returns computed heads of steady state 3D finite difference grid.Steady state 3D Finite Difference Model 
     that computes the heads a 3D ndarray.
@@ -325,127 +324,10 @@ def TransientFlowModel(x, y, z, t, glacier, epsilon, constrain_head_to_WC, rainf
 
 
         if MELT_CALCS:
-
-            #########################
-            # BEGIN MELT CALCULATIONS
-
-            # First calculate the effective grain diameters
-            density = (1-glacier.porosity) * 917 # bulk density is 1-porosity * pure-ice density
-            SSA = 17.6 - (0.02 * density)
-            reff = (6/(SSA / 917))/2 
+            # call external melt calculation function
+            Out, rmelt, tmelt, melt3d, melt_at_cell_centers, porosity = melt_calcs(glacier, Out,\
+                 Nx, Ny, Nz, SHP, it, idt, x, y, z, porosity, datapath)
             
-            # round reff and density down to nearest 100 for consistency with snicar LUT
-            reff = (reff / 100).astype(int) * 100    
-            reff = np.where(reff>=1500,1500,reff)
-            density = (density/100).astype(int)*100
-            
-            # load appropriate LUT depending on user-defined algal load
-            # algae 1 - 5 = 5000, 10000, 25000, 50000, 100000 ppb
-            # algae 0 = clean ice
-
-            if glacier.algae == 0:
-                LUT = np.load('SNICAR_LUT.npy')
-            elif glacier.algae == 1:
-                LUT = np.load('SNICAR_LUT_alg1.npy')
-            elif glacier.algae == 2:
-                LUT = np.load('SNICAR_LUT_alg2.npy')
-            elif glacier.algae == 3:
-                LUT = np.load('SNICAR_LUT_alg3.npy')
-            elif glacier.algae == 4:
-                LUT = np.load('SNICAR_LUT_alg4.npy')
-            elif glacier.algae == 5:
-                LUT = np.load('SNICAR_LUT_alg5.npy')
-            
-            else:
-                raise("Value for algal loading is invalid: please choose integer between 0 and 3")
-
-            # ravel the input vars to help with common indexing
-            albedo = np.zeros((SHP[1],SHP[2]))
-            reff = reff.ravel()
-            density = density.ravel()
-
-            # loop through pixels and grab the albedo from the var idxs
-            # the variable indexes are the nearest integer to their
-            # values /100 -1.
-
-            for a in range(len(albedo)):
-                idx_rds = int(reff[a]/100)-1
-                idx_dens = int(density[a]/100)-1
-                albedo[a] = LUT[idx_rds,idx_dens]
-
-            # add BBA to the Out n-tuple                    
-            Out.BBA[it-1] = albedo.reshape(SHP[1],SHP[2])
-
-                       
-            @dask.delayed
-            def runit(alb, glacier):
-                
-                lon_ref = 0
-                summertime = 0
-                albedo = alb
-                roughness = 0.005
-                met_elevation = glacier.elevation
-
-                SWR,LWR,SHF,LHF = ebm.calculate_seb(glacier.lat, glacier.lon, lon_ref,\
-                     glacier.day, glacier.time, summertime, glacier.slope, glacier.aspect,\
-                          glacier.elevation, met_elevation, glacier.lapse, glacier.inswrd,\
-                              glacier.avp, glacier.airtemp, glacier.windspd, albedo,\
-                                 glacier.roughness)
-
-                sw_melt, lw_melt, shf_melt, lhf_melt, total = ebm.calculate_melt(
-                    SWR,LWR,SHF,LHF, glacier.windspd, glacier.airtemp)
-
-                return sw_melt, shf_melt
-
-            rmelt,tmelt = runit(albedo, glacier).compute()
-            tmelt = np.zeros(shape=(rmelt.shape))+tmelt
-
-              # reshape the ravelled melt values to grid shape
-            rmelt = np.reshape(np.array(rmelt),[Ny,Nx])
-            tmelt = np.reshape(np.array(tmelt),[Ny,Nx])
-            
-            ### NOW DISTRIBUTE RAD MELTING OVER VERTICAL LAYERS
-            # melt is only predicted for surface
-            # here, calculate the melt at each cell center
-            # this is done by approximating an exponential decay
-            # by dividing the surface melt by the factorial of the 
-            # depth (i.e. at depth = 3, melt = surface_melt / (3+2+1)
-            # at the cell center, the melt is the mean of the upper
-            # and lower boundary melt.
-
-            # melt3d will be melt at each vertical cell boundary
-            melt3d = np.zeros(shape =(len(z),Ny,Nx))
-            # melt_at_cell_centers is melt midway between lower and upper cell boundary
-            melt_at_cell_centers = np.zeros(shape =(Nz,Ny,Nx))
-            # upper surface is melt predicted by ebmodel
-            melt3d[0,:,:] = rmelt
-
-            # for each vertical layer boundary melt is divided by factorial
-            # of depth below surface
-            for p in np.arange(1,len(z),1):
-                melt3d[p,:,:] = rmelt/factorial(p)
-
-            # melt at cell centers is mean of melt at upper and lower boundaries
-            for q in np.arange(0,Nz,1): 
-                melt_at_cell_centers[q,:,:] = (melt3d[q,:,:]+melt3d[q+1,:,:])/2
-            
-            # send cell center melt to Out n-tuple
-            Out.melt[it-1] = melt_at_cell_centers
-
-            porosity += (melt_at_cell_centers/1000) # radiative flux increases porosity
-            porosity[0,:,:] -= (tmelt/1000)  # turbulent flux decreases porosity (at surface)
-            
-
-            ### CURRENTLY ADDING MELT EACH TIME STEP SO RESULT IS CUMULATIVE!
-            # i.e melt in t+1 = melt at t + melt at t+1
-            # instead of updating the melting term. Should atually add (melt at t+1 - melt at t)
-
-            
-            ### WORK OUT VOLUME CHANGE AND UPDATE POROSITY
-            ### THEN CREATE MORE LUTs FOR ALGAL CONCNs
-            
-            ### make sure rmelt + tmelt feeds back into F term
-
 
     # reshape Phi to shape of grid
     Out.Phi = Out.Phi.reshape((Nt,) + SHP)
